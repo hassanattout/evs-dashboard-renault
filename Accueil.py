@@ -120,12 +120,16 @@ st.markdown("""
 
 df = load_data()
 
-years = sorted({
+# Create the list
+years_list = [
     int(str(col)[:4])
     for col in df.columns
     if str(col)[:4].isdigit()
     and 2025 <= int(str(col)[:4]) <= 2100
-})
+]
+
+# Provide a fallback if the list is empty
+max_year = max(years_list) if years_list else 2030
 
 st.markdown("# 🏗️ EVS Dashboard")
 st.markdown("### Ponts roulants | Digitalisation de l'Évaluation Spéciale")
