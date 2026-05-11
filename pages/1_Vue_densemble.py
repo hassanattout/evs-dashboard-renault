@@ -241,13 +241,13 @@ heat_df = pd.DataFrame(heat_rows)
 if not heat_df.empty:
     value_col = {
         "Budget total": "Budget",
-        "Nombre d'actions budgétaires": "Action",
+        "Nombre d'interventions": "Actions",
         "Interventions planifiées": "Intervention planifiée",
     }[heat_metric]
 
     value_label = {
         "Budget total": "Budget",
-        "Nombre d'actions budgétaires": "Actions",
+        "Nombre d'interventions": "Actions",
         "Interventions planifiées": "Interventions planifiées",
     }[heat_metric]
 
