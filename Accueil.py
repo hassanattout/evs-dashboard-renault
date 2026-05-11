@@ -1,6 +1,8 @@
 import streamlit as st
+import pandas as pd
 from utils import apply_global_style, load_data
 
+# Configuration de la page
 st.set_page_config(
     page_title="EVS Dashboard | Ponts Roulants",
     page_icon="🏗️",
@@ -8,14 +10,30 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Application du style global (CSS)
 apply_global_style()
 
+# --- CHARGEMENT DES DONNÉES ---
 df = load_data()
 
+# --- CALCULS DES KPIs ---
 equipements = len(df)
 pays = df["pays"].nunique() if "pays" in df.columns else 0
 sites = df["site"].nunique() if "site" in df.columns else 0
 
+# --- EXTRACTION DYNAMIQUE DE L'HORIZON BUDGÉTAIRE ---
+# On cherche les colonnes qui commencent par une année (ex: 2026 OPEX)
+years_list = [
+    int(str(col)[:4])
+    for col in df.columns
+    if str(col)[:4].isdigit()
+    and 2025 <= int(str(col)[:4]) <= 2100
+]
+
+# Définition de la variable max_year (utilisée dans le texte et les KPIs)
+max_year = max(years_list) if years_list else 2030
+
+# --- STYLE CSS PERSONNALISÉ ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
@@ -53,15 +71,6 @@ st.markdown("""
         color: #e8ecff !important;
         font-size: 1.35rem !important;
         font-weight: 700 !important;
-    }
-
-    h3 {
-        color: #e8ecff !important;
-        font-size: 1.05rem !important;
-    }
-
-    hr {
-        border-color: #242635 !important;
     }
 
     .hero-box {
@@ -118,19 +127,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-df = load_data()
-
-# Create the list
-years_list = [
-    int(str(col)[:4])
-    for col in df.columns
-    if str(col)[:4].isdigit()
-    and 2025 <= int(str(col)[:4]) <= 2100
-]
-
-# Provide a fallback if the list is empty
-max_year = max(years_list) if years_list else 2030
-
+# --- CONTENU DE LA PAGE ---
 st.markdown("# 🏗️ EVS Dashboard")
 st.markdown("### Ponts roulants | Digitalisation de l'Évaluation Spéciale")
 
@@ -140,7 +137,7 @@ st.markdown(f"""
         Outil de pilotage du parc de ponts roulants, combinant vision globale,
         priorisation EVS / CAPEX, fiche équipement et calcul de fatigue des mécanismes.
         <br><br>
-        L’horizon <b>2025–{max(years)}</b> correspond à une période de planification budgétaire,
+        L’horizon <b>2025–{max_year}</b> correspond à une période de planification budgétaire,
         avec une projection annuelle des besoins CAPEX et OPEX.
     </div>
 </div>
@@ -153,11 +150,14 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+st.divider()
+
 st.markdown("## Synthèse exécutive")
 
-r1c1, r1c2 = st.columns(2)
+# Affichage des KPIs sur deux lignes
+col1, col2 = st.columns(2)
 
-with r1c1:
+with col1:
     st.markdown(f"""
     <div class="kpi-card">
         <div class="kpi-value">{equipements}</div>
@@ -165,7 +165,7 @@ with r1c1:
     </div>
     """, unsafe_allow_html=True)
 
-with r1c2:
+with col2:
     st.markdown(f"""
     <div class="kpi-card">
         <div class="kpi-value">{pays}</div>
@@ -175,9 +175,9 @@ with r1c2:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-r2c1, r2c2 = st.columns(2)
+col3, col4 = st.columns(2)
 
-with r2c1:
+with col3:
     st.markdown(f"""
     <div class="kpi-card">
         <div class="kpi-value">{sites}</div>
@@ -185,10 +185,10 @@ with r2c1:
     </div>
     """, unsafe_allow_html=True)
 
-with r2c2:
+with col4:
     st.markdown(f"""
     <div class="kpi-card">
-        <div class="kpi-value">2025–{max(years)}</div>
+        <div class="kpi-value">2025–{max_year}</div>
         <div class="kpi-label">Horizon budgétaire</div>
     </div>
     """, unsafe_allow_html=True)
