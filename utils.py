@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import pandas as pd
 import streamlit as st
+import io        # Added for SharePoint
+import requests  # Added for SharePoint
 
 # --- Constants & Configuration ---
 COLORS = {
@@ -28,10 +30,9 @@ PLOTLY_LAYOUT = dict(
     margin=dict(t=55, b=45, l=55, r=30),
 )
 
-# Paths
-EXCEL_PATH = Path(
-    r"C:\Users\a054639\Desktop\evs-dashboard\Capex pont Roadmap.xlsx"
-)
+# --- UPDATED PATH FOR SHAREPOINT ---
+# We use the SharePoint direct download link logic here
+EXCEL_PATH = "https://grouperenault-my.sharepoint.com/:x:/g/personal/olivier_charron_renault_com/EV-ifyR8QNZNvKWJqfRFaFQB8OasV-O_x_I0lKEn9Zit-w?download=1"
 
 JSON_FALLBACK_PATH = Path(__file__).parent / "data" / "ponts_clean.json"
 
@@ -45,32 +46,36 @@ MECHANISM_GROUP_MATRIX = {
 
 # --- Functions ---
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=300) # Updated to 5 minutes to avoid hitting SharePoint too often
 def load_data():
     """
-    Loads data directly from the live Excel file.
-    Cleans country names and numeric columns.
+    Loads data from SharePoint URL or local fallback.
     """
-    # FORCE LIVE EXCEL
-    if EXCEL_PATH.exists():
-        # Explicitly read the correct sheet
-        df = pd.read_excel(
-            EXCEL_PATH,
-            sheet_name="Ponts",
-            header=9,
-        )
-        st.sidebar.success("Live Excel connected")
-    else:
-        # Fallback JSON
+    df = None
+    
+    # 1. Try to load from SharePoint
+    try:
+        # We fetch the file content via HTTP
+        response = requests.get(EXCEL_PATH, timeout=15)
+        response.raise_for_status()
+        # Read the Excel bytes
+        df = pd.read_excel(io.BytesIO(response.content), sheet_name="Ponts", header=9)
+        st.sidebar.success("Live SharePoint connected")
+    except Exception as e:
+        st.sidebar.warning(f"SharePoint connection failed: {e}")
+        
+        # 2. Fallback to Local JSON if SharePoint fails (e.g. SSO block)
         if JSON_FALLBACK_PATH.exists():
             with open(JSON_FALLBACK_PATH, encoding="utf-8") as f:
                 records = json.load(f)
             df = pd.DataFrame(records)
-            st.sidebar.warning("Fallback JSON mode")
+            st.sidebar.info("Using Fallback JSON")
         else:
             st.sidebar.error("No data source found.")
             return pd.DataFrame()
 
+    # --- KEEPING YOUR ORIGINAL CLEANING LOGIC BELOW ---
+    
     # Clean columns
     df.columns = df.columns.astype(str).str.strip()
 
@@ -100,46 +105,23 @@ def load_data():
         }
     )
 
-    # ----------------------------
-    # CLEAN COUNTRY NAMES
-    # ----------------------------
     if "pays" in df.columns:
         df["pays"] = (
             df["pays"]
             .astype(str)
             .str.strip()
             .str.upper()
-            .str.replace(
-                r"^\d+\s*-\s*",
-                "",
-                regex=True,
-            )
+            .str.replace(r"^\d+\s*-\s*", "", regex=True)
         )
 
-    # Clean site names
     if "site" in df.columns:
-        df["site"] = (
-            df["site"]
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
+        df["site"] = df["site"].astype(str).str.strip().str.upper()
 
-    # Numeric columns
-    numeric_cols = [
-        "annee_mes",
-        "age",
-        "evs_annee",
-    ]
-
+    numeric_cols = ["annee_mes", "age", "evs_annee"]
     for col in numeric_cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(
-                df[col],
-                errors="coerce",
-            )
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # EVS status cleaning
     if "evs_statut" in df.columns:
         df["evs_statut"] = (
             df["evs_statut"]
@@ -155,55 +137,30 @@ def load_data():
             })
         )
 
-    # ----------------------------
-    # BUDGET DETECTION
-    # ----------------------------
     budget_cols = [
         c for c in df.columns
-        if (
-            "OPEX" in str(c).upper()
-            or "RGE/RGM" in str(c).upper()
-            or "ACHAT NEUF" in str(c).upper()
-        )
+        if ("OPEX" in str(c).upper() or "RGE/RGM" in str(c).upper() or "ACHAT NEUF" in str(c).upper())
     ]
 
     if budget_cols:
-        df["budget_total"] = (
-            df[budget_cols]
-            .apply(pd.to_numeric, errors="coerce")
-            .fillna(0)
-            .sum(axis=1)
-        )
+        df["budget_total"] = df[budget_cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
     else:
         df["budget_total"] = 0
 
-
-    # EVS amount only
-    evs_cols = [
-        c for c in df.columns
-        if "montant" in str(c).lower()
-    ]
-
+    evs_cols = [c for c in df.columns if "montant" in str(c).lower()]
     if evs_cols:
-        df["evs_montant"] = (
-            pd.to_numeric(df[evs_cols[0]], errors="coerce")
-            .fillna(0)
-        )
+        df["evs_montant"] = pd.to_numeric(df[evs_cols[0]], errors="coerce").fillna(0)
     else:
         df["evs_montant"] = 0
 
     return df
 
-
 def format_euro(value):
-    """Formats numeric values as Euro currency strings."""
     if pd.isna(value) or value == 0:
         return "—"
     return f"{value:,.0f} €".replace(",", " ")
 
-
 def apply_global_style():
-    """Applies custom CSS styling to the Streamlit app."""
     custom_css = f"""
     <style>
     .stApp {{
@@ -214,50 +171,30 @@ def apply_global_style():
     """
     st.markdown(custom_css, unsafe_allow_html=True)
 
-
 FEM_TIME_CLASSES = {
-    "T0 - T ≤ 200 h": 200,
-    "T1 - 200 < T ≤ 400 h": 400,
-    "T2 - 400 < T ≤ 800 h": 800,
-    "T3 - 800 < T ≤ 1 600 h": 1600,
-    "T4 - 1 600 < T ≤ 3 200 h": 3200,
-    "T5 - 3 200 < T ≤ 6 300 h": 6300,
-    "T6 - 6 300 < T ≤ 12 500 h": 12500,
-    "T7 - 12 500 < T ≤ 25 000 h": 25000,
-    "T8 - 25 000 < T ≤ 50 000 h": 50000,
+    "T0 - T ≤ 200 h": 200, "T1 - 200 < T ≤ 400 h": 400, "T2 - 400 < T ≤ 800 h": 800,
+    "T3 - 800 < T ≤ 1 600 h": 1600, "T4 - 1 600 < T ≤ 3 200 h": 3200, "T5 - 3 200 < T ≤ 6 300 h": 6300,
+    "T6 - 6 300 < T ≤ 12 500 h": 12500, "T7 - 12 500 < T ≤ 25 000 h": 25000, "T8 - 25 000 < T ≤ 50 000 h": 50000,
     "T9 - T > 50 000 h": 100000,
 }
 
 LOAD_SPECTRUM = {
-    "L1 - km ≤ 0,125": 0.125,
-    "L2 - 0,125 < km ≤ 0,250": 0.25,
-    "L3 - 0,250 < km ≤ 0,500": 0.50,
-    "L4 - 0,500 < km ≤ 1,000": 1.00,
+    "L1 - km ≤ 0,125": 0.125, "L2 - 0,125 < km ≤ 0,250": 0.25,
+    "L3 - 0,250 < km ≤ 0,500": 0.50, "L4 - 0,500 < km ≤ 1,000": 1.00,
 }
 
-
 def get_mechanism_group(time_class_label, spectrum_label):
-    """
-    Determines FEM mechanism group (M1-M8)
-    using the lookup matrix.
-    """
     try:
         t_code = time_class_label.split(" - ")[0].strip()
         l_code = spectrum_label.split(" - ")[0].strip()
-
         t_index = int(t_code.replace("T", ""))
-
         return MECHANISM_GROUP_MATRIX[l_code][t_index]
-
     except (KeyError, ValueError, IndexError):
         return "N/A"
 
-
 def calc_hresid(R, pi_c, pi_r, Kmf):
-    if Kmf == 0:
-        return None
+    if Kmf == 0: return None
     return (R * pi_c - pi_r) / Kmf
-
 
 def calc_ifm(Hr, Kmr, Hc, Kmc):
     pi_r = Hr * Kmr
@@ -265,41 +202,19 @@ def calc_ifm(Hr, Kmr, Hc, Kmc):
     ifm = pi_r / pi_c if pi_c > 0 else None
     return ifm, pi_r, pi_c
 
-
 def get_recommendation(ifm, hresid, hu):
-    if ifm is None:
-        return "Données insuffisantes."
-
-    annees = (
-        hresid / hu
-        if hresid is not None and hu > 0
-        else None
-    )
-
-    if ifm >= 1.0:
-        msg = "Analyse immédiate requise."
-    elif ifm >= 0.75:
-        msg = "EVS à planifier prioritairement."
-    elif ifm >= 0.50:
-        msg = "Surveillance renforcée recommandée."
-    else:
-        msg = "Situation normale."
-
-    if annees is not None:
-        msg += f" Durée résiduelle estimée : {annees:.1f} ans."
-
+    if ifm is None: return "Données insuffisantes."
+    annees = hresid / hu if hresid is not None and hu > 0 else None
+    if ifm >= 1.0: msg = "Analyse immédiate requise."
+    elif ifm >= 0.75: msg = "EVS à planifier prioritairement."
+    elif ifm >= 0.50: msg = "Surveillance renforcée recommandée."
+    else: msg = "Situation normale."
+    if annees is not None: msg += f" Durée résiduelle estimée : {annees:.1f} ans."
     return msg
 
-
 def get_status(ifm):
-    if ifm is None:
-        return "Inconnu", "badge-normal", COLORS["grey"]
-
-    if ifm < 0.50:
-        return "Normal", "badge-normal", COLORS["green"]
-    elif ifm < 0.75:
-        return "Surveillance", "badge-watch", COLORS["yellow"]
-    elif ifm < 1.0:
-        return "Critique", "badge-critical", COLORS["orange"]
-
+    if ifm is None: return "Inconnu", "badge-normal", COLORS["grey"]
+    if ifm < 0.50: return "Normal", "badge-normal", COLORS["green"]
+    elif ifm < 0.75: return "Surveillance", "badge-watch", COLORS["yellow"]
+    elif ifm < 1.0: return "Critique", "badge-critical", COLORS["orange"]
     return "Urgent", "badge-urgent", COLORS["red"]
