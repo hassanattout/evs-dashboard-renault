@@ -248,7 +248,7 @@ if not heat_df.empty:
     value_label = {
         "Budget total": "Budget",
         "Nombre d'actions budgétaires": "Actions",
-        "EVS obligatoires": "EVS obligatoires",
+        "Interventions planifiées": "Interventions planifiées",
     }[heat_metric]
 
     pivot = (
