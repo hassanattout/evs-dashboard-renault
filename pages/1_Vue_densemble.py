@@ -196,7 +196,7 @@ st.caption("Matrice site × année : les montants élevés apparaissent en rouge
 
 heat_metric = st.selectbox(
     "Indicateur affiché",
-    ["Budget total", "Nombre d'interventions", "Interventions planifiées"],
+    ["Budget total", "Interventions planifiées"],
 )
 
 heat_rows = []
@@ -224,6 +224,10 @@ for _, row in df.iterrows():
         evs_due_this_year = is_evs_oblig and row.get("evs_annee") == y
 
         intervention_planned = has_budget or evs_due_this_year
+        intervention_count = len([
+	    c for c in year_cols
+	    if pd.to_numeric(row.get(c,0), errors="coerce") > 0
+	])
 
         if intervention_planned:
             heat_rows.append(
@@ -231,8 +235,7 @@ for _, row in df.iterrows():
                     "Site": row["site"],
                     "Année": str(y),
                     "Budget": budget_y,
-                    "Nombre d'interventions": int(has_budget),
-                    "Intervention planifiées": int(intervention_planned),
+                    "Intervention planifiées": int(has_budget or evs_due_this_year),
                 }
             )
 
@@ -241,13 +244,11 @@ heat_df = pd.DataFrame(heat_rows)
 if not heat_df.empty:
     value_col = {
         "Budget total": "Budget",
-        "Nombre d'interventions": "Nombre d'interventions",
         "Interventions planifiées": "Intervention planifiées",
     }[heat_metric]
 
     value_label = {
         "Budget total": "Budget",
-        "Nombre d'interventions": "Nombres d'interventions",
         "Interventions planifiées": "Interventions planifiées",
     }[heat_metric]
 
