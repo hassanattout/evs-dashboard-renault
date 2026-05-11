@@ -25,12 +25,9 @@ from utils import (
     get_mechanism_group,
     get_recommendation,
     get_status,
-    require_uploaded_excel,
 )
 
 apply_global_style()
-
-require_uploaded_excel()
 
 st.markdown("# 🧮 Calculateur IFm / Hresid")
 st.caption(
