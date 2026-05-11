@@ -34,53 +34,85 @@ PLOTLY_LAYOUT = dict(
 EXCEL_PATH = "https://grouperenault-my.sharepoint.com/:x:/g/personal/olivier_charron_renault_com/EV-ifyR8QNZNvKWJqfRFaFQB8OasV-O_x_I0lKEn9Zit-w?download=1"
 JSON_FALLBACK_PATH = Path(__file__).parent / "data" / "ponts_clean.json"
 
-@st.cache_data(ttl=3600) # Cache d'une heure
+@st.cache_data(ttl=3600)
+def process_data(file_content, is_excel=True):
+    """
+    Cette fonction s'occupe uniquement du nettoyage (le calcul lourd).
+    Elle est séparée pour pouvoir être mise en cache.
+    """
+    if is_excel:
+        df = pd.read_excel(file_content, sheet_name="Ponts", header=9)
+    else:
+        # Cas du JSON fallback
+        df = pd.read_json(file_content)
+
+    # --- LOGIQUE DE NETTOYAGE ---
+    df.columns = df.columns.astype(str).str.strip()
+    df = df.dropna(how="all")
+    if "Pont" in df.columns:
+        df = df[df["Pont"].notna()]
+
+    rename_map = {
+        "PAYS": "pays", "Site": "site", "Pont": "pont",
+        "MES": "annee_mes", "Age": "age",
+        "Evaluation Spéciale O/N": "evs_statut", "EVS Année": "evs_annee",
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+
+    if "pays" in df.columns:
+        df["pays"] = df["pays"].astype(str).str.strip().str.upper().str.replace(r"^\d+\s*-\s*", "", regex=True)
+    if "site" in df.columns:
+        df["site"] = df["site"].astype(str).str.strip().str.upper()
+
+    for col in ["annee_mes", "age", "evs_annee"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    if "evs_statut" in df.columns:
+        df["evs_statut"] = df["evs_statut"].astype(str).str.strip().replace({
+            "O": "Obligatoire", "Oui": "Obligatoire", "N": "Non requis", "Non": "Non requis"
+        })
+
+    budget_cols = [c for c in df.columns if any(k in str(c).upper() for k in ["OPEX", "RGE/RGM", "ACHAT NEUF"])]
+    if budget_cols:
+        df["budget_total"] = df[budget_cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
+    else:
+        df["budget_total"] = 0
+    
+    evs_cols = [c for c in df.columns if "montant" in str(c).lower()]
+    df["evs_montant"] = pd.to_numeric(df[evs_cols[0]], errors="coerce").fillna(0) if evs_cols else 0
+
+    return df
+
 def load_data():
     """
-    Charge les données avec 3 niveaux de priorité :
-    1. Import manuel par l'utilisateur (Upload)
-    2. Connexion directe SharePoint (si autorisé par IT)
-    3. Fichier JSON local (Fallback GitHub)
+    Fonction principale appelée par vos pages. 
+    Les widgets sont ICI, en dehors du cache.
     """
-    df = None
-    
-    # --- ETAPE 1 : Interface d'upload manuel ---
     st.sidebar.markdown("---")
     st.sidebar.subheader("📁 Source de données")
-    uploaded_file = st.sidebar.file_uploader(
-        "Mettre à jour via l'Excel SharePoint", 
-        type="xlsx",
-        help="Glissez le fichier Excel depuis votre dossier OneDrive synchronisé."
-    )
+    uploaded_file = st.sidebar.file_uploader("Mettre à jour via l'Excel", type="xlsx")
 
+    # 1. Priorité à l'upload manuel
     if uploaded_file is not None:
-        try:
-            df = pd.read_excel(uploaded_file, sheet_name="Ponts", header=9)
-            st.sidebar.success("✅ Fichier importé avec succès")
-        except Exception as e:
-            st.sidebar.error(f"Erreur lors de la lecture du fichier : {e}")
+        return process_data(uploaded_file, is_excel=True)
 
-    # --- ETAPE 2 : Si pas d'upload, tentative automatique SharePoint ---
-    if df is None:
-        try:
-            response = requests.get(EXCEL_PATH, timeout=5)
-            response.raise_for_status()
-            df = pd.read_excel(io.BytesIO(response.content), sheet_name="Ponts", header=9)
-            st.sidebar.success("🌐 Connecté au SharePoint Live")
-        except Exception:
-            # On ne met pas d'erreur ici car le fallback prendra le relai
-            pass
+    # 2. Tentative SharePoint
+    try:
+        response = requests.get(EXCEL_PATH, timeout=5)
+        response.raise_for_status()
+        st.sidebar.success("🌐 SharePoint connecté")
+        return process_data(io.BytesIO(response.content), is_excel=True)
+    except:
+        pass
 
-    # --- ETAPE 3 : Fallback final sur JSON ---
-    if df is None:
-        if JSON_FALLBACK_PATH.exists():
-            with open(JSON_FALLBACK_PATH, encoding="utf-8") as f:
-                records = json.load(f)
-            df = pd.DataFrame(records)
-            st.sidebar.info("💡 Utilisation des données de secours")
-        else:
-            st.sidebar.error("❌ Aucune donnée trouvée.")
-            return pd.DataFrame()
+    # 3. Fallback JSON
+    if JSON_FALLBACK_PATH.exists():
+        st.sidebar.info("💡 Données de secours")
+        return process_data(JSON_FALLBACK_PATH, is_excel=False)
+    
+    st.error("Aucune donnée disponible.")
+    return pd.DataFrame()
 
     # --- LOGIQUE DE NETTOYAGE (Identique à votre original) ---
     df.columns = df.columns.astype(str).str.strip()
