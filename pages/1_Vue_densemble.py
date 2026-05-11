@@ -231,7 +231,7 @@ for _, row in df.iterrows():
                     "Site": row["site"],
                     "Année": str(y),
                     "Budget": budget_y,
-                    "Nombre d'interventions budgéraires": int(has_budget),
+                    "Nombre d'interventions": int(has_budget),
                     "Intervention planifiées": int(intervention_planned),
                 }
             )
@@ -241,13 +241,13 @@ heat_df = pd.DataFrame(heat_rows)
 if not heat_df.empty:
     value_col = {
         "Budget total": "Budget",
-        "Nombre d'interventions budgétaires": "Nombre d'interventions budgétaires",
+        "Nombre d'interventions": "Nombre d'interventions",
         "Interventions planifiées": "Intervention planifiées",
     }[heat_metric]
 
     value_label = {
         "Budget total": "Budget",
-        "Nombre d'interventions": "Actions",
+        "Nombre d'interventions": "Nombres d'interventions",
         "Interventions planifiées": "Interventions planifiées",
     }[heat_metric]
 
