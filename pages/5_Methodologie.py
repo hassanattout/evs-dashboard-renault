@@ -1,7 +1,8 @@
 import streamlit as st
-from utils import load_data, PLOTLY_LAYOUT, COLORS, apply_global_style
+from utils import load_data, PLOTLY_LAYOUT, COLORS, apply_global_style, require_uploaded_excel
 
 apply_global_style()
+require_uploaded_excel()
 
 st.markdown("# ℹ️ Méthodologie")
 st.caption("Fondements de calcul, hypothèses et limites de l'outil EVS")

@@ -13,9 +13,10 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils import load_data, PLOTLY_LAYOUT, COLORS, apply_global_style, format_euro
+from utils import load_data, PLOTLY_LAYOUT, COLORS, apply_global_style, format_euro, require_uploaded_excel
 
 apply_global_style()
+require_uploaded_excel()
 
 st.markdown("# 📋 Fiche Pont")
 st.caption("Détail complet d'un équipement")

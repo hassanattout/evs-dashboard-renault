@@ -8,11 +8,11 @@ import streamlit as st
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils import COLORS, PLOTLY_LAYOUT, load_data
+from utils import COLORS, PLOTLY_LAYOUT, load_data, require_uploaded_excel
 from utils import apply_global_style
 
 apply_global_style()
-
+require_uploaded_excel()
 
 def format_fr_number(x):
     if pd.isna(x):

@@ -1,11 +1,12 @@
 import json
+import inspect
 from pathlib import Path
+from io import BytesIO
+
 import pandas as pd
 import streamlit as st
-import io
-import requests
 
-# --- Constants & Configuration ---
+
 COLORS = {
     "bg": "#0d0f16",
     "card": "#141824",
@@ -30,193 +31,419 @@ PLOTLY_LAYOUT = dict(
     margin=dict(t=55, b=45, l=55, r=30),
 )
 
-# Configuration SharePoint
-EXCEL_PATH = "https://grouperenault-my.sharepoint.com/:x:/g/personal/olivier_charron_renault_com/EV-ifyR8QNZNvKWJqfRFaFQB8OasV-O_x_I0lKEn9Zit-w?download=1"
-JSON_FALLBACK_PATH = Path(__file__).parent / "data" / "ponts_clean.json"
+FEM_TIME_CLASSES = {
+    "T0 (T ≤ 200 h)": 200,
+    "T1 (200 < T ≤ 400 h)": 400,
+    "T2 (400 < T ≤ 800 h)": 800,
+    "T3 (800 < T ≤ 1 600 h)": 1600,
+    "T4 (1 600 < T ≤ 3 200 h)": 3200,
+    "T5 (3 200 < T ≤ 6 300 h)": 6300,
+    "T6 (6 300 < T ≤ 12 500 h)": 12500,
+    "T7 (12 500 < T ≤ 25 000 h)": 25000,
+    "T8 (25 000 < T ≤ 50 000 h)": 50000,
+    "T9 (T > 50 000 h)": 100000,
+}
 
-@st.cache_data(ttl=3600)
-def process_data(file_content, is_excel=True):
-    """
-    Cette fonction s'occupe uniquement du nettoyage (le calcul lourd).
-    Elle est séparée pour pouvoir être mise en cache.
-    """
-    if is_excel:
-        df = pd.read_excel(file_content, sheet_name="Ponts", header=9)
-    else:
-        # Cas du JSON fallback
-        df = pd.read_json(file_content)
+LOAD_SPECTRUM = {
+    "L1 (km ≤ 0,125)": 0.125,
+    "L2 (0,125 < km ≤ 0,250)": 0.25,
+    "L3 (0,250 < km ≤ 0,500)": 0.50,
+    "L4 (0,500 < km ≤ 1,000)": 1.00,
+}
 
-    # --- LOGIQUE DE NETTOYAGE ---
-    df.columns = df.columns.astype(str).str.strip()
-    df = df.dropna(how="all")
-    if "Pont" in df.columns:
-        df = df[df["Pont"].notna()]
+FEM_LOAD_SPECTRUM = LOAD_SPECTRUM
 
-    rename_map = {
-        "PAYS": "pays", "Site": "site", "Pont": "pont",
-        "MES": "annee_mes", "Age": "age",
-        "Evaluation Spéciale O/N": "evs_statut", "EVS Année": "evs_annee",
+MECHANISM_GROUP_MATRIX = {
+    "L1": ["M1", "M1", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8"],
+    "L2": ["M1", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M8"],
+    "L3": ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M8", "M8"],
+    "L4": ["M2", "M3", "M4", "M5", "M6", "M7", "M8", "M8", "M8", "M8"],
+}
+
+def has_uploaded_excel():
+    return "uploaded_excel_bytes" in st.session_state
+
+
+def clear_uploaded_excel():
+    st.session_state.pop("uploaded_excel_bytes", None)
+    st.session_state.pop("uploaded_excel_name", None)
+
+
+def upload_excel_center():
+    uploaded_file = st.file_uploader(
+        "Importer le fichier Excel du parc",
+        type=["xlsx"],
+        key="central_excel_upload",
+    )
+
+    if uploaded_file is not None:
+        st.session_state["uploaded_excel_bytes"] = uploaded_file.getvalue()
+        st.session_state["uploaded_excel_name"] = uploaded_file.name
+        st.success(f"Fichier chargé : {uploaded_file.name}")
+        st.rerun()
+
+
+def require_uploaded_excel():
+    if not has_uploaded_excel():
+        st.warning("Veuillez d'abord importer un fichier Excel depuis la page Accueil.")
+        st.stop()
+
+
+def get_uploaded_excel():
+    if "uploaded_excel_bytes" in st.session_state:
+        return BytesIO(st.session_state["uploaded_excel_bytes"])
+    return None
+
+
+def detect_sheet_name(excel_file):
+    xls = pd.ExcelFile(excel_file)
+
+    if "Ponts" in xls.sheet_names:
+        return "Ponts"
+
+    return xls.sheet_names[0]
+
+
+def read_excel_file(excel_file):
+    sheet_name = detect_sheet_name(excel_file)
+
+    return pd.read_excel(
+        excel_file,
+        sheet_name=sheet_name,
+        header=9,
+    )
+
+
+def clean_text_col(series):
+    return (
+        series.astype(str)
+        .str.strip()
+        .str.replace("\n", " ", regex=False)
+        .str.replace("\r", " ", regex=False)
+    )
+
+
+def normalize_country(value):
+    if pd.isna(value):
+        return value
+
+    value = str(value).strip()
+
+    replacements = {
+        "1-FRANCE": "FRANCE",
+        "2-ESPAGNE": "ESPAGNE",
+        "FRANCE": "FRANCE",
+        "ESPAGNE": "ESPAGNE",
     }
-    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
-    if "pays" in df.columns:
-        df["pays"] = df["pays"].astype(str).str.strip().str.upper().str.replace(r"^\d+\s*-\s*", "", regex=True)
-    if "site" in df.columns:
-        df["site"] = df["site"].astype(str).str.strip().str.upper()
+    return replacements.get(value, value)
 
-    for col in ["annee_mes", "age", "evs_annee"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    if "evs_statut" in df.columns:
-        df["evs_statut"] = df["evs_statut"].astype(str).str.strip().replace({
-            "O": "Obligatoire", "Oui": "Obligatoire", "N": "Non requis", "Non": "Non requis"
-        })
-
-    budget_cols = [c for c in df.columns if any(k in str(c).upper() for k in ["OPEX", "RGE/RGM", "ACHAT NEUF"])]
-    if budget_cols:
-        df["budget_total"] = df[budget_cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
-    else:
-        df["budget_total"] = 0
-    
-    evs_cols = [c for c in df.columns if "montant" in str(c).lower()]
-    df["evs_montant"] = pd.to_numeric(df[evs_cols[0]], errors="coerce").fillna(0) if evs_cols else 0
-
-    return df
 
 def load_data():
-    """
-    Fonction principale appelée par vos pages. 
-    Les widgets sont ICI, en dehors du cache.
-    """
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📁 Source de données")
-    uploaded_file = st.sidebar.file_uploader("Mettre à jour via l'Excel", type="xlsx")
+    uploaded_file = get_uploaded_excel()
 
-    # 1. Priorité à l'upload manuel
     if uploaded_file is not None:
-        return process_data(uploaded_file, is_excel=True)
+        df = read_excel_file(uploaded_file)
 
-    # 2. Tentative SharePoint
-    try:
-        response = requests.get(EXCEL_PATH, timeout=5)
-        response.raise_for_status()
-        st.sidebar.success("🌐 SharePoint connecté")
-        return process_data(io.BytesIO(response.content), is_excel=True)
-    except:
-        pass
+    else:
+        st.error("Aucun fichier Excel importé.")
+        return pd.DataFrame()
 
-    # 3. Fallback JSON
-    if JSON_FALLBACK_PATH.exists():
-        st.sidebar.info("💡 Données de secours")
-        return process_data(JSON_FALLBACK_PATH, is_excel=False)
-    
-    st.error("Aucune donnée disponible.")
-    return pd.DataFrame()
+    df.columns = (
+        df.columns.astype(str)
+        .str.strip()
+        .str.replace("\n", " ", regex=False)
+        .str.replace("\r", " ", regex=False)
+    )
 
-    # --- LOGIQUE DE NETTOYAGE (Identique à votre original) ---
-    df.columns = df.columns.astype(str).str.strip()
     df = df.dropna(how="all")
-    if "Pont" in df.columns:
-        df = df[df["Pont"].notna()]
 
     rename_map = {
-        "PAYS": "pays", "Site": "site", "Pont": "pont",
-        "MES": "annee_mes", "Age": "age",
-        "Evaluation Spéciale O/N": "evs_statut", "EVS Année": "evs_annee",
+        "PAYS": "pays",
+        "Pays": "pays",
+        "SITE": "site",
+        "Site": "site",
+        "PONT": "pont",
+        "Pont": "pont",
+        "MES": "annee_mes",
+        "Age": "age",
+        "Âge": "age",
+        "Evaluation Spéciale O/N": "evs_statut",
+        "Evaluation Speciale O/N": "evs_statut",
+        "Évaluation Spéciale O/N": "evs_statut",
+        "EVS Année": "evs_annee",
+        "EVS Annee": "evs_annee",
+        "E/S Montant": "evs_montant",
     }
+
     df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
-    if "pays" in df.columns:
-        df["pays"] = df["pays"].astype(str).str.strip().str.upper().str.replace(r"^\d+\s*-\s*", "", regex=True)
-    if "site" in df.columns:
-        df["site"] = df["site"].astype(str).str.strip().str.upper()
+    if "pont" in df.columns:
+        df = df[df["pont"].notna()]
 
-    for col in ["annee_mes", "age", "evs_annee"]:
+    for col in ["pays", "site", "pont"]:
+        if col in df.columns:
+            df[col] = clean_text_col(df[col])
+
+    if "pays" in df.columns:
+        df["pays"] = df["pays"].apply(normalize_country)
+
+    for col in ["annee_mes", "age", "evs_annee", "evs_montant"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if "evs_statut" in df.columns:
-        df["evs_statut"] = df["evs_statut"].astype(str).str.strip().replace({
-            "O": "Obligatoire", "Oui": "Obligatoire", "N": "Non requis", "Non": "Non requis"
-        })
+        df["evs_statut"] = (
+            df["evs_statut"]
+            .astype(str)
+            .str.strip()
+            .replace({
+                "O": "Obligatoire",
+                "Oui": "Obligatoire",
+                "N": "Non requis",
+                "Non": "Non requis",
+                "NC": "Non concerné",
+                "nan": "Non renseigné",
+                "": "Non renseigné",
+            })
+        )
 
-    budget_cols = [c for c in df.columns if any(k in str(c).upper() for k in ["OPEX", "RGE/RGM", "ACHAT NEUF"])]
-    df["budget_total"] = df[budget_cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1) if budget_cols else 0
-    
-    evs_cols = [c for c in df.columns if "montant" in str(c).lower()]
-    df["evs_montant"] = pd.to_numeric(df[evs_cols[0]], errors="coerce").fillna(0) if evs_cols else 0
+    budget_keywords = ["OPEX", "RGE/RGM", "ACHAT NEUF"]
+
+    years = sorted({
+        int(str(col).strip()[:4])
+        for col in df.columns
+        if str(col).strip()[:4].isdigit()
+        and 2025 <= int(str(col).strip()[:4]) <= 2100
+    })
+
+    for y in years:
+        year_cols = [
+            c for c in df.columns
+            if str(y) in str(c)
+            and any(k in str(c).upper() for k in budget_keywords)
+        ]
+
+        if year_cols:
+            df[f"budget_{y}"] = (
+                df[year_cols]
+                .apply(pd.to_numeric, errors="coerce")
+                .fillna(0)
+                .sum(axis=1)
+            )
+
+    budget_cols = [
+        c for c in df.columns
+        if c.startswith("budget_")
+        and c.replace("budget_", "").isdigit()
+    ]
+
+    if budget_cols:
+        df["budget_total"] = df[budget_cols].sum(axis=1)
+    else:
+        montant_cols = [c for c in df.columns if "montant" in str(c).lower()]
+        if montant_cols:
+            df["budget_total"] = (
+                df[montant_cols]
+                .apply(pd.to_numeric, errors="coerce")
+                .fillna(0)
+                .sum(axis=1)
+            )
+        else:
+            df["budget_total"] = 0
+
+    if "evs_montant" not in df.columns:
+        df["evs_montant"] = df["budget_total"]
 
     return df
 
-# --- GARDER LES AUTRES FONCTIONS (calc_ifm, get_recommendation, etc.) ---
-def apply_global_style():
-    custom_css = f"""
-    <style>
-    .stApp {{ background-color: {COLORS['bg']}; color: {COLORS['text']}; }}
-    </style>
-    """
-    st.markdown(custom_css, unsafe_allow_html=True)
+
+def calc_ifm(*args):
+    try:
+        if len(args) == 2:
+            pi_r, pi_c = args
+            pi_r = float(pi_r)
+            pi_c = float(pi_c)
+            return round(pi_r / pi_c, 3) if pi_c > 0 else 0
+
+        if len(args) == 4:
+            hr, kmr, hc, kmc = map(float, args)
+            pi_r = hr * kmr
+            pi_c = hc * kmc
+            ifm = pi_r / pi_c if pi_c > 0 else 0
+            return round(ifm, 3), pi_r, pi_c
+
+    except Exception:
+        pass
+
+    return 0
+
+
+def calc_hresid(*args):
+    try:
+        if len(args) == 3:
+            pi_r, pi_c, kmf = map(float, args)
+            if pi_c <= 0 or kmf <= 0:
+                return 100.0
+            return max(0, round((1 - (pi_r / (pi_c * kmf))) * 100, 1))
+
+        if len(args) == 4:
+            r, pi_c, pi_r, kmf = map(float, args)
+            if kmf <= 0:
+                return None
+            return max(0, round((r * pi_c - pi_r) / kmf, 1))
+
+    except Exception:
+        pass
+
+    return 0.0
+
+
+def get_mechanism_group(time_class, load_class):
+    try:
+        t_code = str(time_class).split()[0].replace("(", "").strip()
+        l_code = str(load_class).split()[0].replace("(", "").strip()
+        t_index = int(t_code.replace("T", ""))
+        return MECHANISM_GROUP_MATRIX[l_code][t_index]
+    except Exception:
+        return "M1"
+
+
+def get_recommendation(ifm, hresid=None, hu=None):
+    try:
+        ifm = float(ifm)
+        hresid = float(hresid) if hresid is not None else None
+
+        if ifm >= 1 or (hresid is not None and hresid <= 0):
+            return "🔴 Arrêt immédiat / remplacement requis"
+        if ifm >= 0.85 or (hresid is not None and hresid <= 5):
+            return "🟠 Action prioritaire / surveillance renforcée"
+        if ifm >= 0.60 or (hresid is not None and hresid <= 10):
+            return "🟡 Maintenance préventive recommandée"
+        return "🟢 Fonctionnement acceptable"
+    except Exception:
+        return "Données insuffisantes"
+
+
+def get_status(ifm, hresid=None):
+    try:
+        ifm = float(ifm)
+        hresid = float(hresid) if hresid is not None else 100
+
+        if ifm >= 1 or hresid <= 0:
+            return "Critique", "badge-urgent", COLORS["red"]
+        if ifm >= 0.85 or hresid <= 5:
+            return "Surveillance", "badge-critical", COLORS["orange"]
+        if ifm >= 0.60 or hresid <= 10:
+            return "Préventif", "badge-watch", COLORS["yellow"]
+        return "Suffisant", "badge-normal", COLORS["green"]
+
+    except Exception:
+        return "Inconnu", "badge-normal", COLORS["grey"]
+
 
 def format_euro(value):
-    if pd.isna(value) or value == 0: return "—"
+    if pd.isna(value) or value == 0:
+        return "—"
     return f"{value:,.0f} €".replace(",", " ")
+
 
 def apply_global_style():
     custom_css = f"""
     <style>
     .stApp {{
-        background-color: {COLORS['bg']};
-        color: {COLORS['text']};
+        background-color: {COLORS["bg"]};
+        color: {COLORS["text"]};
+    }}
+
+    [data-testid="stSidebar"] {{
+        background: #0b0d13;
+        border-right: 1px solid #242635;
+    }}
+
+    [data-testid="stSidebar"] * {{
+        color: #d7ddf2 !important;
+    }}
+
+    .block-container {{
+        padding-top: 3rem;
+        padding-left: 3rem;
+        padding-right: 3rem;
+        max-width: none;
+        width: 100%;
+    }}
+
+    h1 {{
+        color: #e8ecff !important;
+        font-size: 2.6rem !important;
+        font-weight: 700 !important;
+    }}
+
+    h2 {{
+        color: #e8ecff !important;
+        font-size: 1.35rem !important;
+        font-weight: 700 !important;
+    }}
+
+    h3 {{
+        color: #e8ecff !important;
+        font-size: 1.05rem !important;
+    }}
+
+    hr {{
+        border-color: #242635 !important;
+    }}
+
+    .hero-box {{
+        background: linear-gradient(135deg, #141824 0%, #0f121a 100%);
+        border: 1px solid #2a2e3f;
+        border-radius: 22px;
+        padding: 34px 38px;
+        margin-top: 26px;
+        margin-bottom: 28px;
+        box-shadow: 0 18px 50px rgba(0,0,0,0.30);
+    }}
+
+    .hero-subtitle {{
+        color: #aeb7cf;
+        font-size: 1.05rem;
+        line-height: 1.7;
+        max-width: 980px;
+    }}
+
+    .kpi-card {{
+        background: linear-gradient(180deg, #171b27 0%, #10131c 100%);
+        border: 1px solid #31384d;
+        border-radius: 18px;
+        padding: 28px 26px;
+        box-shadow: 0 18px 40px rgba(0,0,0,0.28);
+        height: 100%;
+    }}
+
+    .kpi-value {{
+        font-size: 2.35rem;
+        font-weight: 700;
+        color: #9cc7ff;
+        line-height: 1;
+    }}
+
+    .kpi-label {{
+        font-size: 0.78rem;
+        color: #9aa3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-top: 10px;
+    }}
+
+    .objective-box {{
+        background: #101723;
+        border-left: 4px solid #89b4fa;
+        border-radius: 14px;
+        padding: 18px 22px;
+        color: #cdd6f4;
+        margin-top: 28px;
+        margin-bottom: 26px;
     }}
     </style>
     """
     st.markdown(custom_css, unsafe_allow_html=True)
-
-FEM_TIME_CLASSES = {
-    "T0 - T ≤ 200 h": 200, "T1 - 200 < T ≤ 400 h": 400, "T2 - 400 < T ≤ 800 h": 800,
-    "T3 - 800 < T ≤ 1 600 h": 1600, "T4 - 1 600 < T ≤ 3 200 h": 3200, "T5 - 3 200 < T ≤ 6 300 h": 6300,
-    "T6 - 6 300 < T ≤ 12 500 h": 12500, "T7 - 12 500 < T ≤ 25 000 h": 25000, "T8 - 25 000 < T ≤ 50 000 h": 50000,
-    "T9 - T > 50 000 h": 100000,
-}
-
-LOAD_SPECTRUM = {
-    "L1 - km ≤ 0,125": 0.125, "L2 - 0,125 < km ≤ 0,250": 0.25,
-    "L3 - 0,250 < km ≤ 0,500": 0.50, "L4 - 0,500 < km ≤ 1,000": 1.00,
-}
-
-def get_mechanism_group(time_class_label, spectrum_label):
-    try:
-        t_code = time_class_label.split(" - ")[0].strip()
-        l_code = spectrum_label.split(" - ")[0].strip()
-        t_index = int(t_code.replace("T", ""))
-        return MECHANISM_GROUP_MATRIX[l_code][t_index]
-    except (KeyError, ValueError, IndexError):
-        return "N/A"
-
-def calc_hresid(R, pi_c, pi_r, Kmf):
-    if Kmf == 0: return None
-    return (R * pi_c - pi_r) / Kmf
-
-def calc_ifm(Hr, Kmr, Hc, Kmc):
-    pi_r = Hr * Kmr
-    pi_c = Hc * Kmc
-    ifm = pi_r / pi_c if pi_c > 0 else None
-    return ifm, pi_r, pi_c
-
-def get_recommendation(ifm, hresid, hu):
-    if ifm is None: return "Données insuffisantes."
-    annees = hresid / hu if hresid is not None and hu > 0 else None
-    if ifm >= 1.0: msg = "Analyse immédiate requise."
-    elif ifm >= 0.75: msg = "EVS à planifier prioritairement."
-    elif ifm >= 0.50: msg = "Surveillance renforcée recommandée."
-    else: msg = "Situation normale."
-    if annees is not None: msg += f" Durée résiduelle estimée : {annees:.1f} ans."
-    return msg
-
-def get_status(ifm):
-    if ifm is None: return "Inconnu", "badge-normal", COLORS["grey"]
-    if ifm < 0.50: return "Normal", "badge-normal", COLORS["green"]
-    elif ifm < 0.75: return "Surveillance", "badge-watch", COLORS["yellow"]
-    elif ifm < 1.0: return "Critique", "badge-critical", COLORS["orange"]
-    return "Urgent", "badge-urgent", COLORS["red"]

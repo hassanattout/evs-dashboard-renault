@@ -7,10 +7,10 @@ import streamlit as st
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils import load_data, apply_global_style
+from utils import load_data, apply_global_style, require_uploaded_excel
 
 apply_global_style()
-
+require_uploaded_excel()
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
